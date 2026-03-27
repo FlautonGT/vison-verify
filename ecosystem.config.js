@@ -6,7 +6,7 @@ module.exports = {
       cwd: '/home/ubuntu/verify',
       env: {
         NODE_ENV: 'production',
-        PORT: 3002
+        PORT: 3003
       },
       instances: 1,
       exec_mode: 'fork',
