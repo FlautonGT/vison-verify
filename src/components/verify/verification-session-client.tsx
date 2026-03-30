@@ -1,14 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { NotFoundScreen } from "@/components/verify/not-found-screen";
 import { VerifyExperience } from "@/components/verify/verify-experience";
-import {
-  buildMockSession,
-  type MockVerificationSession,
-  type VerificationEngineCheck,
-  type VerificationFlowType,
-  type VerificationRuntimeStage,
+import type {
+  MockVerificationSession,
+  VerificationEngineCheck,
+  VerificationFlowType,
+  VerificationRuntimeStage,
 } from "@/lib/mock-session";
 
 type HostedVerificationSession = {
@@ -21,6 +21,7 @@ type HostedVerificationSession = {
   currentStage: string;
   brandName: string;
   logoMonogram: string;
+  logoUrl?: string;
   primaryColor: string;
   secondaryColor: string;
   showPoweredByVison: boolean;
@@ -51,9 +52,9 @@ type HostedVerificationSession = {
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "https://api.vison.id";
 
-function toStringRecord(value: unknown, fallback: Record<string, string>) {
+function toStringRecord(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return fallback;
+    return {};
   }
 
   const result: Record<string, string> = {};
@@ -62,36 +63,35 @@ function toStringRecord(value: unknown, fallback: Record<string, string>) {
       result[key] = entry;
     }
   }
-  return Object.keys(result).length ? result : fallback;
+  return result;
 }
 
-function adaptHostedSession(sessionId: string, hosted: HostedVerificationSession): MockVerificationSession {
-  const fallback = buildMockSession(sessionId);
+function adaptHostedSession(hosted: HostedVerificationSession): MockVerificationSession & { logoUrl?: string } {
   return {
-    ...fallback,
     sessionId: hosted.sessionId,
     workflowId: hosted.workflowId,
-    referenceId: hosted.referenceId || fallback.referenceId,
+    referenceId: hosted.referenceId || hosted.sessionId.slice(-8).toUpperCase(),
     environment: hosted.environment,
     flowType: hosted.flowType,
     brandName: hosted.brandName,
     logoMonogram: hosted.logoMonogram,
+    logoUrl: hosted.logoUrl,
     primaryColor: hosted.primaryColor,
     secondaryColor: hosted.secondaryColor,
     showPoweredByVison: hosted.showPoweredByVison,
     expiresAt: hosted.expiresAt,
     estimatedDuration: hosted.estimatedDuration,
-    webhookUrl: hosted.webhookUrl || fallback.webhookUrl,
-    webhookEvents: hosted.webhookEvents?.length ? hosted.webhookEvents : fallback.webhookEvents,
+    webhookUrl: hosted.webhookUrl || "",
+    webhookEvents: hosted.webhookEvents || [],
     resumeWindowMinutes: hosted.resumeWindowMinutes,
     requestsPerMinute: hosted.requestsPerMinute,
     burstLimit: hosted.burstLimit,
     livenessMode: hosted.livenessMode,
     detectDeepfake: hosted.detectDeepfake,
     maxRetries: hosted.maxRetries,
-    extractedFields: hosted.extractedFields,
-    documentLabel: hosted.documentLabel,
-    sampleData: toStringRecord(hosted.progressData?.formData, fallback.sampleData),
+    extractedFields: hosted.extractedFields || [],
+    documentLabel: hosted.documentLabel || "KTP",
+    sampleData: toStringRecord(hosted.progressData?.formData),
     preprocessing: hosted.preprocessing,
     stages: hosted.stages,
     engineChecks: hosted.engineChecks,
@@ -101,20 +101,16 @@ function adaptHostedSession(sessionId: string, hosted: HostedVerificationSession
 export function VerificationSessionClient({ sessionId }: { sessionId: string }) {
   const searchParams = useSearchParams();
   const sessionToken = searchParams.get("token");
-  const fallbackSession = useMemo(() => buildMockSession(sessionId), [sessionId]);
-  const [session, setSession] = useState<MockVerificationSession>(fallbackSession);
+  const [session, setSession] = useState<(MockVerificationSession & { logoUrl?: string }) | null>(null);
   const [progressData, setProgressData] = useState<Record<string, unknown>>({});
   const [resultData, setResultData] = useState<Record<string, unknown>>({});
   const [currentStage, setCurrentStage] = useState<string>("welcome");
-  const [loading, setLoading] = useState(Boolean(sessionToken));
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setSession(fallbackSession);
-  }, [fallbackSession]);
+  const [loading, setLoading] = useState(true);
+  const [isInvalid, setIsInvalid] = useState(false);
 
   useEffect(() => {
     if (!sessionToken) {
+      setIsInvalid(true);
       setLoading(false);
       return;
     }
@@ -124,7 +120,7 @@ export function VerificationSessionClient({ sessionId }: { sessionId: string }) 
     async function bootstrap() {
       try {
         setLoading(true);
-        setError(null);
+        setIsInvalid(false);
 
         const response = await fetch(`${apiBaseUrl}/v1/public/verification/verify-session`, {
           method: "POST",
@@ -139,23 +135,22 @@ export function VerificationSessionClient({ sessionId }: { sessionId: string }) 
         });
 
         if (!response.ok) {
-          throw new Error(`bootstrap failed with status ${response.status}`);
+          throw new Error("invalid-session");
         }
 
         const payload = (await response.json()) as { data?: HostedVerificationSession };
         if (!active || !payload.data) {
-          return;
+          throw new Error("invalid-session");
         }
 
-        setSession(adaptHostedSession(sessionId, payload.data));
+        setSession(adaptHostedSession(payload.data));
         setProgressData(payload.data.progressData || {});
         setResultData(payload.data.resultData || {});
         setCurrentStage(payload.data.currentStage || "welcome");
-      } catch (bootstrapError) {
-        if (!active) {
-          return;
+      } catch {
+        if (active) {
+          setIsInvalid(true);
         }
-        setError(bootstrapError instanceof Error ? bootstrapError.message : "Failed to load verification session");
       } finally {
         if (active) {
           setLoading(false);
@@ -172,33 +167,27 @@ export function VerificationSessionClient({ sessionId }: { sessionId: string }) 
 
   if (loading) {
     return (
-      <main className="verify-shell">
-        <section className="verify-layout">
-          <div className="panel stage-content">
-            <span className="eyebrow">Connecting session</span>
-            <h1 style={{ margin: 0 }}>Preparing verification workspace</h1>
-            <p>Fetching the latest workflow snapshot and session checkpoint from api.vison.id.</p>
-          </div>
-        </section>
+      <main className="verify-loading-shell">
+        <div className="verify-loading-card">
+          <span className="verify-loading-dot" />
+          <p>Menyiapkan sesi verifikasi...</p>
+        </div>
       </main>
     );
   }
 
+  if (isInvalid || !session || !sessionToken) {
+    return <NotFoundScreen />;
+  }
+
   return (
-    <>
-      {error ? (
-        <div style={{ maxWidth: 1440, margin: "0 auto", padding: "1rem 1rem 0", color: "#ffd6d6" }}>
-          Session bootstrap fallback active: {error}
-        </div>
-      ) : null}
-      <VerifyExperience
-        apiBaseUrl={sessionToken ? apiBaseUrl : undefined}
-        initialCurrentStage={currentStage}
-        initialProgressData={progressData}
-        initialResultData={resultData}
-        session={session}
-        sessionToken={sessionToken || undefined}
-      />
-    </>
+    <VerifyExperience
+      apiBaseUrl={apiBaseUrl}
+      initialCurrentStage={currentStage}
+      initialProgressData={progressData}
+      initialResultData={resultData}
+      session={session}
+      sessionToken={sessionToken}
+    />
   );
 }

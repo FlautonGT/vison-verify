@@ -33,6 +33,7 @@ export type MockVerificationSession = {
   flowType: VerificationFlowType;
   brandName: string;
   logoMonogram: string;
+  logoUrl?: string;
   primaryColor: string;
   secondaryColor: string;
   showPoweredByVison: boolean;
